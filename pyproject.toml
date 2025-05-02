@@ -1,0 +1,26 @@
+[project]
+name = "mxapplist"
+version = "0.1.0"
+description = "Save a list of installed flatpak and pacman applications to a database"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+dependencies = [
+    "rich>=14.0.0",
+]
+
+[project.scripts]
+mxapplist = "mxapplist.mxapplist:main"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.15.0",
+    "pytest>=8.3.5",
+]
