@@ -29,10 +29,51 @@ from rich.console import Console
 from rich.prompt import Confirm
 from rich.table import Table
 from rich.text import Text
+from sqlalchemy import ForeignKey, create_engine, func, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-APPLIST_DATABASE = Path.home() / "applist.db"
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Device(Base):
+    __tablename__ = "devices"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(nullable=False, unique=True)
+
+    def __repr__(self) -> str:
+        return f"<Device {self.id} => {self.name}>"
+
+
+class PackageManager(Base):
+    __tablename__ = "package_managers"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(nullable=False, unique=True)
+
+    def __repr__(self) -> str:
+        return f"<PackageManager {self.id} => {self.name}>"
+
+
+class Application(Base):
+    __tablename__ = "apps"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(nullable=False)
+    device: Mapped[int] = mapped_column(ForeignKey("devices.id"))
+    package_manager: Mapped[int] = mapped_column(
+        ForeignKey("package_managers.id")
+    )
+
+    def __repr__(self) -> str:
+        return f"<Application {self.id} => {self.name}>"
+
+
+# APPLIST_DATABASE = Path.home() / "applist.db"
+APPLIST_DATABASE = Path("data/mxapplist.db")
 
 console = Console()
+engine = create_engine(f"sqlite:///{APPLIST_DATABASE}")
+Session = sessionmaker(engine)
 
 
 @contextmanager
@@ -46,31 +87,6 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
     finally:
         if connection:
             connection.close()
-
-
-def initialize_database() -> None:
-    statement_1 = """CREATE TABLE IF NOT EXISTS devices (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE
-    )"""
-    statement_2 = """CREATE TABLE IF NOT EXISTS package_managers (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE
-    )"""
-    statement_3 = """CREATE TABLE IF NOT EXISTS apps (
-        id INTEGER PRIMARY KEY,
-        app_name TEXT NOT NULL,
-        device_id INTEGER,
-        app_type INTEGER,
-        FOREIGN KEY (device_id) REFERENCES devices (id),
-        FOREIGN KEY (app_type) REFERENCES package_manager (id)
-    )"""
-    with get_db() as database:
-        database.execute("PRAGMA journal_mode=wal")
-        database.execute(statement_1)
-        database.execute(statement_2)
-        database.execute(statement_3)
-        database.commit()
 
 
 def get_flatpaks() -> list[str]:
@@ -102,124 +118,135 @@ def get_pacman_packages(
 
 
 def get_device_id(name: str) -> Optional[int]:
-    with get_db() as db:
-        device_id = db.execute(
-            "SELECT id FROM devices WHERE name = ?", (name,)
-        ).fetchone()
-        if device_id:
-            return int(device_id[0])
-        return None
-
-
-def insert_device(name: str) -> int:
-    with get_db() as db:
-        insertion = db.execute("INSERT INTO devices (name) VALUES (?)", (name,))
-        db.commit()
-        rowid = insertion.lastrowid
-        if not rowid:
-            raise ValueError(
-                f"Could not retrieve id for {name} from database after inserting the new device"
-            )
-        return rowid
-
-
-def get_app_type_id(name: str) -> Optional[int]:
-    with get_db() as db:
-        app_type_id = db.execute(
-            "SELECT id FROM package_managers WHERE name = ?", (name,)
-        ).fetchone()
-        if app_type_id:
-            return int(app_type_id[0])
-
-        return None
-
-
-def insert_app_type(name: str) -> int:
-    with get_db() as db:
-        insertion = db.execute(
-            "INSERT INTO package_managers (name) VALUES (?)", (name,)
-        )
-        db.commit()
-        rowid = insertion.lastrowid
-        if not rowid:
-            raise ValueError(
-                f"Could not retrieve id for {name} from database after inserting the new package manager"
-            )
-        return rowid
-
-
-def get_all_items() -> list[tuple[str, str, str]]:
-    sql_query = """SELECT
-      app_name,
-      devices.name,
-      package_managers.name
-    FROM apps
-    INNER JOIN devices ON devices.id = apps.device_id
-    INNER JOIN package_managers ON package_managers.id = apps.app_type
-    ORDER BY LOWER(app_name)"""
-
-    with get_db() as db:
-        result = db.execute(sql_query).fetchall()
-        if len(result) < 1:
-            raise ValueError("Database seems to be empty")
+    query = select(Device.id).where(Device.name == name)
+    with Session() as session:
+        result = session.execute(query).scalar()
         return result
 
 
-def add_items(arguments: dict[str, Any]) -> None:
-    device_id = get_device_id(arguments["device"])
+def insert_device(name: str) -> int:
+    with Session() as session:
+        try:
+            new_device = Device(name=name)
+            session.add(new_device)
+            session.commit()
+            session.refresh(new_device)
+            rowid = new_device.id
+            if not rowid:
+                raise ValueError(
+                    f"Could not retrieve id for {name} from database after inserting the new device"
+                )
+            return rowid
+        except Exception:
+            session.rollback()
+            raise
+
+
+def get_package_manager(name: str) -> Optional[int]:
+    query = select(PackageManager.id).where(PackageManager.name == name)
+    with Session() as db:
+        result = db.execute(query).scalar()
+        return result
+
+
+def insert_package_manager(name: str) -> int:
+    with Session() as session:
+        try:
+            new_package_manager = PackageManager(name=name)
+            session.add(new_package_manager)
+            session.commit()
+            session.refresh(new_package_manager)  # Ensure 'id' is loaded
+            rowid = new_package_manager.id
+            if not rowid:
+                raise ValueError(
+                    f"Could not retrieve id for {name} from database after inserting the new package manager"
+                )
+            return rowid
+        except Exception:
+            session.rollback()
+            raise
+
+
+def get_all_items():
+    query = (
+        select(Application.name, Device.name, PackageManager.name)
+        .join(Device, Application.device == Device.id)
+        .join(PackageManager, Application.package_manager == PackageManager.id)
+        .order_by(func.lower(Application.name))
+    )
+
+    with Session() as db:
+        result = db.execute(query).fetchall()
+        return result
+
+
+def check_ids(device: str, package_manager: str) -> tuple[int, int]:
+    device_id = get_device_id(device)
     if not device_id:
         msg = Text.from_ansi(
-            f"Device \033[1;32m{arguments['device']}\033[0m is not present in database."
+            f"Device \033[1;32m{device}\033[0m is not present in database."
         )
         console.print(msg)
         answer = Confirm.ask("Do you want to add it?")
         if not answer:
             print("\033[31mNot adding device, quitting...\033[0m")
             raise SystemExit(1)
-        device_id = insert_device(arguments["device"])
+        device_id = insert_device(device)
 
-    app_type_id = get_app_type_id(arguments["package"])
-    if not app_type_id:
+    package_manager_id = get_package_manager(package_manager)
+    if not package_manager_id:
         msg = Text.from_ansi(
-            f"Package manager \033[1;32m{arguments['package']}\033[0m is not present in database."
+            f"Package manager \033[1;32m{package_manager}\033[0m is not present in database."
         )
         console.print(msg)
         answer = Confirm.ask("Do you want to add it?")
-
         if not answer:
             print("\033[31mNot adding package manager, quitting...\033[0m")
             raise SystemExit(1)
-        app_type_id = insert_app_type(arguments["package"])
+        package_manager_id = insert_package_manager(package_manager)
+
+    return (device_id, package_manager_id)
+
+
+def insert_applications(
+    items: list[str], device_id: int, package_manager_id: int
+) -> None:
+    apps_to_insert = [
+        Application(
+            name=app_name,
+            device=device_id,
+            package_manager=package_manager_id,
+        )
+        for app_name in items
+    ]
+    with Session() as session:
+        try:
+            session.add_all(apps_to_insert)
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+
+
+def add_applications_by_package_manager(arguments: dict[str, Any]) -> None:
+    device_id, package_manager_id = check_ids(
+        device=arguments["device"], package_manager=arguments["package"]
+    )
 
     match arguments["package"]:
         case "flatpak":
-            with get_db() as db:
-                flatpaks = get_flatpaks()
-                insert_flatpaks = [
-                    (app_name, device_id, app_type_id) for app_name in flatpaks
-                ]
-                db.executemany(
-                    "INSERT INTO apps (app_name, device_id, app_type) VALUES (?,?,?)",
-                    insert_flatpaks,
-                )
-                db.commit()
+            insert_applications(get_flatpaks(), device_id, package_manager_id)
         case "pacman":
-            with get_db() as db:
-                pacman_packages = get_pacman_packages()
-                insert_pacman_packages = [
-                    (app_name, device_id, app_type_id)
-                    for app_name in pacman_packages
-                ]
-                db.executemany(
-                    "INSERT INTO apps (app_name, device_id, app_type) VALUES (?,?,?)",
-                    insert_pacman_packages,
-                )
-                db.commit()
+            insert_applications(
+                get_pacman_packages(), device_id, package_manager_id
+            )
         case _:
             raise ValueError("Could not insert either flatpak or pacman")
 
 
-def show_all_items(*args: Any, **kwargs: Any) -> None:
+def show_all_applications(*args: Any, **kwargs: Any) -> None:
+    all_items = get_all_items()
+
     table = Table()
     table.add_column("Application")
     table.add_column("Device")
@@ -229,11 +256,12 @@ def show_all_items(*args: Any, **kwargs: Any) -> None:
     color_map_devices = {}
     color_index_devices = 0
     colors_devices = ["cyan", "green", "yellow"]
+
     color_map_package_managers = {}
     color_index_package_managers = 0
-    colors_package_managers = ["blue", "magenta", "red", "white"]
+    colors_package_managers = ["magenta", "blue", "red"]
 
-    for item in get_all_items():
+    for item in all_items:
         if item[1] not in color_map_devices:
             color_map_devices[item[1]] = colors_devices[
                 color_index_devices % len(colors_devices)
@@ -273,7 +301,7 @@ def get_cli_options() -> dict[str, Any]:
     addition_parser = subparsers.add_parser(
         "add", help="Add applications to the database"
     )
-    addition_parser.set_defaults(func=add_items)
+    addition_parser.set_defaults(func=add_applications_by_package_manager)
     addition_parser.add_argument(
         "device",
         action="store",
@@ -290,14 +318,13 @@ def get_cli_options() -> dict[str, Any]:
     show_parser = subparsers.add_parser(
         "show", help="Show all items in the database"
     )
-    show_parser.set_defaults(func=show_all_items)
+    show_parser.set_defaults(func=show_all_applications)
 
     return vars(parser.parse_args())
 
 
 def main() -> None:
     arguments = get_cli_options()
-    initialize_database()
     arguments["func"](arguments)
 
 

@@ -38,10 +38,10 @@ def test_insert_and_get_device(temp_db):
 
 def test_insert_and_get_app_type(temp_db):
     package_name = "pacman"
-    app_type_id = mxapplist.insert_app_type(package_name)
+    app_type_id = mxapplist.insert_package_manager(package_name)
     assert isinstance(app_type_id, int)
 
-    fetched_id = mxapplist.get_app_type_id(package_name)
+    fetched_id = mxapplist.get_package_manager(package_name)
     assert fetched_id == app_type_id
 
 
@@ -70,7 +70,7 @@ def test_add_flatpak_items(mock_confirm, mock_get_flatpaks, temp_db):
     mock_get_flatpaks.return_value = ["TestApp"]
     args = {"device": "dev1", "package": "flatpak"}
 
-    mxapplist.add_items(args)
+    mxapplist.add_applications_by_package_manager(args)
     results = mxapplist.get_all_items()
     assert results[0][0] == "TestApp"
     assert results[0][1] == "dev1"
@@ -83,7 +83,7 @@ def test_add_pacman_items(mock_confirm, mock_get_pacman, temp_db):
     mock_get_pacman.return_value = ["pkgA", "pkgB"]
     args = {"device": "dev2", "package": "pacman"}
 
-    mxapplist.add_items(args)
+    mxapplist.add_applications_by_package_manager(args)
     results = mxapplist.get_all_items()
     app_names = [r[0] for r in results]
     assert "pkgA" in app_names and "pkgB" in app_names
