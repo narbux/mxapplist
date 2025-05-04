@@ -116,9 +116,9 @@ def get_pacman_packages(
 
 
 def get_device_id(name: str) -> Optional[int]:
-    query = select(Device.id).where(Device.name == name)
+    statement = select(Device.id).where(Device.name == name)
     with Session() as session:
-        result = session.execute(query).scalar()
+        result = session.execute(statement).scalar()
         return result
 
 
@@ -141,9 +141,9 @@ def insert_device(name: str) -> int:
 
 
 def get_package_manager(name: str) -> Optional[int]:
-    query = select(PackageManager.id).where(PackageManager.name == name)
+    statement = select(PackageManager.id).where(PackageManager.name == name)
     with Session() as db:
-        result = db.execute(query).scalar()
+        result = db.execute(statement).scalar()
         return result
 
 
@@ -165,8 +165,8 @@ def insert_package_manager(name: str) -> int:
             raise
 
 
-def get_all_items():
-    query = (
+def get_all_items(distinct: bool = False):
+    statement = (
         select(Application.name, Device.name, PackageManager.name)
         .join(Device, Application.device_id == Device.id)
         .join(
@@ -174,9 +174,24 @@ def get_all_items():
         )
         .order_by(func.lower(Application.name))
     )
-
+    if distinct:
+        subquery = (
+            select(Application.name)
+            .group_by(Application.name)
+            .having(func.count(func.distinct(Application.device_id)) == 1)
+        )
+        statement = (
+            select(Application.name, Device.name, PackageManager.name)
+            .join(Device, Application.device_id == Device.id)
+            .join(
+                PackageManager,
+                Application.package_manager_id == PackageManager.id,
+            )
+            .filter(Application.name.in_(subquery))
+            .order_by(func.lower(Application.name))
+        )
     with Session() as db:
-        result = db.execute(query).fetchall()
+        result = db.execute(statement).fetchall()
         return result
 
 
@@ -245,7 +260,7 @@ def add_applications_by_package_manager(arguments: dict[str, Any]) -> None:
 
 
 def show_all_applications(*args: Any, **kwargs: Any) -> None:
-    all_items = get_all_items()
+    all_items = get_all_items(distinct=args[0]["distinct"])
 
     table = Table()
     table.add_column("Application")
@@ -316,6 +331,12 @@ def get_cli_options() -> dict[str, Any]:
 
     show_parser = subparsers.add_parser(
         "show", help="Show all items in the database"
+    )
+    show_parser.add_argument(
+        "--distinct",
+        action="store_true",
+        help="only show applications that are distinct on each device",
+        default=False,
     )
     show_parser.set_defaults(func=show_all_applications)
 
