@@ -12,3 +12,6 @@ wheels/
 # Dev environment
 .mypy_cache
 .pytest_cache
+
+# Data files
+data/
