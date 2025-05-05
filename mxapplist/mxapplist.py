@@ -36,6 +36,15 @@ from sqlalchemy.orm import (
     sessionmaker,
 )
 
+try:
+    import gi
+
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gio, GObject, Gtk
+except ImportError as e:
+    print("Could not import Gtk repository")
+    raise e
+
 
 class Base(DeclarativeBase):
     pass
@@ -340,6 +349,8 @@ def get_cli_options() -> dict[str, Any]:
     )
     show_parser.set_defaults(func=show_all_applications)
 
+    show_gui = subparsers.add_parser("gui", help="Show all items in a GUI")
+    show_gui.set_defaults(func=run_gui)
     return vars(parser.parse_args())
 
 
@@ -372,6 +383,116 @@ def check_or_create_db(db_path: Path) -> bool:
         raise SystemExit(1)
 
     return just_created
+
+
+class AppRow(GObject.GObject):
+    app_name = GObject.Property(type=str)
+    device = GObject.Property(type=str)
+    package_manager = GObject.Property(type=str)
+
+    def __init__(self, app_name, device, package_manager):
+        super().__init__()
+        self.app_name = app_name
+        self.device = device
+        self.package_manager = package_manager
+
+
+class ApplicationListWindow(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app)
+        self.set_title("Installed Applications")
+        self.set_default_size(600, 400)
+
+        # Main vertical box
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.set_child(vbox)
+
+        # Toggle for distinct items
+        toggle_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            margin_top=6,
+            margin_start=6,
+        )
+        label = Gtk.Label(label="Show only distinct applications", xalign=0)
+        self.distinct_switch = Gtk.Switch()
+        self.distinct_switch.set_active(False)
+        self.distinct_switch.connect("notify::active", self._on_toggle_changed)
+        toggle_box.append(label)
+        toggle_box.append(self.distinct_switch)
+        vbox.append(toggle_box)
+
+        # ListStore and Sorter
+        self.liststore = Gio.ListStore.new(AppRow)
+        self.sort_model = Gtk.SortListModel.new(
+            model=self.liststore, sorter=None
+        )
+        self.sort_model.set_incremental(True)
+
+        self.selection_model = Gtk.SingleSelection.new(self.sort_model)
+        self.column_view = Gtk.ColumnView.new(self.selection_model)
+
+        # Add sortable columns
+        self._add_column("Application", "app_name")
+        self._add_column("Device", "device")
+        self._add_column("Package Manager", "package_manager")
+
+        # Scrollable view
+        scrolled_window = Gtk.ScrolledWindow()
+        scrolled_window.set_child(self.column_view)
+        scrolled_window.set_vexpand(True)
+        scrolled_window.set_hexpand(True)
+        vbox.append(scrolled_window)
+
+        self._populate_items()
+
+    def _add_column(self, title, attr):
+        factory = Gtk.SignalListItemFactory.new()
+        factory.connect("setup", self._on_setup, attr)
+        factory.connect("bind", self._on_bind, attr)
+
+        column = Gtk.ColumnViewColumn.new(title, factory)
+
+        sorter = Gtk.StringSorter.new()
+        sorter.set_expression(Gtk.PropertyExpression.new(AppRow, None, attr))
+        column.set_sorter(sorter)
+
+        self.column_view.append_column(column)
+
+    def _populate_items(self):
+        self.liststore.remove_all()
+        distinct = self.distinct_switch.get_active()
+        for app_name, device, package in get_all_items(distinct=distinct):
+            self.liststore.append(AppRow(app_name, device, package))
+
+    def _on_toggle_changed(self, switch, gparam):
+        self._populate_items()
+
+    def _on_setup(self, factory, list_item, attr):
+        label = Gtk.Label(xalign=0)
+        list_item.set_child(label)
+
+    def _on_bind(self, factory, list_item, attr):
+        row = list_item.get_item()
+        label = list_item.get_child()
+        label.set_text(getattr(row, attr))
+
+
+class ApplicationListApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(
+            application_id="nl.marnixenthoven.mxAppList",
+            flags=Gio.ApplicationFlags.FLAGS_NONE,
+        )
+
+    def do_activate(self):
+        win = ApplicationListWindow(self)
+        win.present()
+
+
+def run_gui(*args, **kwargs):
+    app = ApplicationListApp()
+    app.run()
 
 
 def main() -> None:
