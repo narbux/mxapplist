@@ -296,6 +296,26 @@ def show_all_applications(*args: Any, **kwargs: Any) -> None:
     console.print(table)
 
 
+def refresh_device(*args: Any, **kwargs: Any) -> None:
+    with Session() as db:
+        device = db.query(Device).where(Device.name == args[0]["device"]).one()
+        console.print(
+            "[yellow]Warning: by continuing you add both Pacman and Flatpak[/yellow]"
+        )
+        answer = Confirm.ask(
+            f"Are you sure you want to refresh all applications from {device.name}"
+        )
+        if answer:
+            db.query(Application).where(Application.device == device).delete()
+            db.commit()
+            add_applications_by_package_manager(
+                {"device": args[0]["device"], "package": "flatpak"}
+            )
+            add_applications_by_package_manager(
+                {"device": args[0]["device"], "package": "pacman"}
+            )
+
+
 def get_cli_options() -> dict[str, Any]:
     parser = argparse.ArgumentParser(prog="mxapplist")
     parser.add_argument(
@@ -339,6 +359,17 @@ def get_cli_options() -> dict[str, Any]:
         default=False,
     )
     show_parser.set_defaults(func=show_all_applications)
+
+    refresh_parser = subparsers.add_parser(
+        "refresh", help="Refresh all items in database from this device"
+    )
+    refresh_parser.add_argument(
+        "device",
+        action="store",
+        help="input the name of this device",
+        metavar="my_desktop",
+    )
+    refresh_parser.set_defaults(func=refresh_device)
 
     return vars(parser.parse_args())
 
