@@ -117,13 +117,13 @@ def get_pacman_packages(
 
 def get_device_id(name: str) -> Optional[int]:
     statement = select(Device.id).where(Device.name == name)
-    with Session() as session:
+    with SessionLocal() as session:
         result = session.execute(statement).scalar()
         return result
 
 
 def insert_device(name: str) -> int:
-    with Session() as session:
+    with SessionLocal() as session:
         try:
             new_device = Device(name=name)
             session.add(new_device)
@@ -142,13 +142,13 @@ def insert_device(name: str) -> int:
 
 def get_package_manager(name: str) -> Optional[int]:
     statement = select(PackageManager.id).where(PackageManager.name == name)
-    with Session() as db:
+    with SessionLocal() as db:
         result = db.execute(statement).scalar()
         return result
 
 
 def insert_package_manager(name: str) -> int:
-    with Session() as session:
+    with SessionLocal() as session:
         try:
             new_package_manager = PackageManager(name=name)
             session.add(new_package_manager)
@@ -190,7 +190,7 @@ def get_all_items(distinct: bool = False):
             .filter(Application.name.in_(subquery))
             .order_by(func.lower(Application.name))
         )
-    with Session() as db:
+    with SessionLocal() as db:
         result = db.execute(statement).fetchall()
         return result
 
@@ -234,7 +234,7 @@ def insert_applications(
         )
         for app_name in items
     ]
-    with Session() as session:
+    with SessionLocal() as session:
         try:
             session.add_all(apps_to_insert)
             session.commit()
@@ -243,12 +243,12 @@ def insert_applications(
             raise
 
 
-def add_applications_by_package_manager(arguments: dict[str, Any]) -> None:
+def add_applications_by_package_manager(device: str, package: Literal["flatpak", "pacman"] ) -> None:
     device_id, package_manager_id = check_ids(
-        device=arguments["device"], package_manager=arguments["package"]
+        device=device, package_manager=package
     )
 
-    match arguments["package"]:
+    match package:
         case "flatpak":
             insert_applications(get_flatpaks(), device_id, package_manager_id)
         case "pacman":
@@ -259,8 +259,8 @@ def add_applications_by_package_manager(arguments: dict[str, Any]) -> None:
             raise ValueError("Could not insert either flatpak or pacman")
 
 
-def show_all_applications(*args: Any, **kwargs: Any) -> None:
-    all_items = get_all_items(distinct=args[0]["distinct"])
+def show_all_applications(distinct: bool = False) -> None:
+    all_items = get_all_items(distinct=distinct)
 
     table = Table()
     table.add_column("Application")
@@ -296,23 +296,23 @@ def show_all_applications(*args: Any, **kwargs: Any) -> None:
     console.print(table)
 
 
-def refresh_device(*args: Any, **kwargs: Any) -> None:
-    with Session() as db:
-        device = db.query(Device).where(Device.name == args[0]["device"]).one()
+def refresh_device(device: str) -> None:
+    with SessionLocal() as db:
+        device_db = db.query(Device).where(Device.name == device).one()
         console.print(
             "[yellow]Warning: by continuing you add both Pacman and Flatpak[/yellow]"
         )
         answer = Confirm.ask(
-            f"Are you sure you want to refresh all applications from {device.name}"
+            f"Are you sure you want to refresh all applications from {device_db.name}"
         )
         if answer:
-            db.query(Application).where(Application.device == device).delete()
+            db.query(Application).where(Application.device == device_db).delete()
             db.commit()
             add_applications_by_package_manager(
-                {"device": args[0]["device"], "package": "flatpak"}
+                device= device, package= "flatpak"
             )
             add_applications_by_package_manager(
-                {"device": args[0]["device"], "package": "pacman"}
+                device= device, package= "pacman"
             )
 
 
@@ -330,12 +330,11 @@ def get_cli_options() -> dict[str, Any]:
         metavar="/path/to/db",
     )
 
-    subparsers = parser.add_subparsers(required=True)
+    subparsers = parser.add_subparsers(required=True, dest="command")
 
     addition_parser = subparsers.add_parser(
         "add", help="Add applications to the database"
     )
-    addition_parser.set_defaults(func=add_applications_by_package_manager)
     addition_parser.add_argument(
         "device",
         action="store",
@@ -358,7 +357,6 @@ def get_cli_options() -> dict[str, Any]:
         help="only show applications that are distinct on each device",
         default=False,
     )
-    show_parser.set_defaults(func=show_all_applications)
 
     refresh_parser = subparsers.add_parser(
         "refresh", help="Refresh all items in database from this device"
@@ -369,7 +367,6 @@ def get_cli_options() -> dict[str, Any]:
         help="input the name of this device",
         metavar="my_desktop",
     )
-    refresh_parser.set_defaults(func=refresh_device)
 
     return vars(parser.parse_args())
 
@@ -410,16 +407,25 @@ def main() -> None:
     db_path = Path(arguments["database"]).expanduser().resolve()
     db_validity = check_or_create_db(db_path)
 
-    global Session
+    global SessionLocal
     engine = create_engine(f"sqlite:///{arguments['database']}")
 
     if db_validity or db_path.stat().st_size == 0:
         Base.metadata.create_all(engine)
 
-    Session = sessionmaker(engine)
+    SessionLocal = sessionmaker(engine)
     console.print(f"Using db: {db_path}")
 
-    arguments["func"](arguments)
+
+    match arguments["command"]:
+        case "add":
+            add_applications_by_package_manager(device=arguments["device"], package=arguments["package"])
+        case "show":
+            show_all_applications(distinct=arguments["distinct"])
+        case "refresh":
+            refresh_device(device=arguments["device"])
+        case _:
+            raise ValueError("Command not recognized")
 
 
 if __name__ == "__main__":
